@@ -23,10 +23,11 @@ export interface Trip {
   revenue: number;
   kmTraveled: number;
   expenses: number;
+  expenseNote?: string;
   fuelCost: number;
   driverShare: number;
   netProfit: number;
-  visibleToDriver: boolean;
+  visibleToDriver: boolean; // Control if driver can see this record
 }
 
 export interface Passenger {
