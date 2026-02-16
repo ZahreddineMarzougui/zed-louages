@@ -33,8 +33,7 @@ import {
   Loader2,
   Menu,
   X,
-  MapPin,
-  Database
+  MapPin
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -315,75 +314,6 @@ export default function App() {
     setEditingPassenger(null);
   };
   const removePassenger = async (id: string) => { if (confirm('حذف الحجز؟')) await deleteDoc(doc(db, "passengers", id)); };
-
-  const handleSeedData = async () => {
-    if (!confirm("هل أنت متأكد؟ سيتم إضافة بيانات تجريبية (سيارة، سائق، رحلات، ومسافرين).")) return;
-    setIsLoading(true);
-    try {
-      // 1. Add Vehicle
-      const vRef = await addDoc(collection(db, "vehicles"), {
-        plateNumber: "123 تونس 9999",
-        model: "Renault Trafic Test",
-        currentKM: 120000,
-        lastOilChangeKM: 115000
-      });
-      
-      // 2. Add Driver
-      await addDoc(collection(db, "drivers"), {
-        name: "سائق تجريبي",
-        password: "123",
-        vehicleId: vRef.id
-      });
-
-      // 3. Add Trips (Last 5 days)
-      const today = new Date();
-      for(let i=0; i<5; i++) {
-         const d = new Date(today);
-         d.setDate(d.getDate() - i);
-         const dateStr = d.toISOString().split('T')[0];
-         
-         const revenue = 300 + Math.random() * 50;
-         const fuel = 60;
-         const driverShare = revenue * 0.20;
-         const net = revenue - fuel - driverShare; 
-
-         await addDoc(collection(db, "trips"), {
-           vehicleId: vRef.id,
-           date: dateStr,
-           revenue: Number(revenue.toFixed(3)),
-           fuelCost: Number(fuel.toFixed(3)),
-           expenses: 0,
-           kmTraveled: 350,
-           driverShare: Number(driverShare.toFixed(3)),
-           netProfit: Number(net.toFixed(3)),
-           visibleToDriver: true
-         });
-      }
-
-      // 4. Add Passengers (Next 3 days)
-      const directions: ('TunisToJelma' | 'JelmaToTunis')[] = ['TunisToJelma', 'JelmaToTunis'];
-      for(let i=0; i<3; i++) {
-          const d = new Date(today);
-          d.setDate(d.getDate() + i);
-          const dateStr = d.toISOString().split('T')[0];
-          
-          await addDoc(collection(db, "passengers"), {
-              name: `مسافر تجريبي ${i+1}`,
-              phone: "20123456",
-              direction: directions[i % 2],
-              date: dateStr,
-              vehicleId: vRef.id,
-              seatsCount: 2
-          });
-      }
-      alert("تمت الإضافة بنجاح! تم إنشاء سيارة، سائق، وحجوزات.");
-    } catch (e) {
-      console.error(e);
-      alert("حدث خطأ");
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   if (isLoading) {
     return (
@@ -822,7 +752,7 @@ export default function App() {
                 </div>
               )}
               {activeTab === 'drivers' && <AddDriverForm vehicles={data.vehicles} onSave={addDriver} data={data} removeDriver={removeDriver} />}
-              {activeTab === 'settings' && <SettingsView settings={data.settings} updateSettings={updateSettings} onSeedData={handleSeedData} />}
+              {activeTab === 'settings' && <SettingsView settings={data.settings} updateSettings={updateSettings} />}
            </div>
         )}
 
@@ -941,7 +871,7 @@ const AddDriverForm = ({ vehicles, onSave, data, removeDriver }: any) => {
   );
 };
 
-const SettingsView = ({ settings, updateSettings, onSeedData }: any) => (
+const SettingsView = ({ settings, updateSettings }: any) => (
   <div className="max-w-xl space-y-6">
      <div className="space-y-4">
         <label className="text-sm font-black text-slate-400 mr-2">كلمة مرور المالك</label>
@@ -950,11 +880,6 @@ const SettingsView = ({ settings, updateSettings, onSeedData }: any) => (
      <div className="space-y-4">
         <label className="text-sm font-black text-slate-400 mr-2">تنبيه الصيانة كل (كم)</label>
         <input type="number" value={settings.oilChangeInterval} onChange={e => updateSettings({oilChangeInterval: parseInt(e.target.value)})} className="w-full p-5 bg-slate-50 rounded-[1.5rem] font-black" />
-     </div>
-     <div className="pt-8 mt-8 border-t border-slate-100">
-        <button onClick={onSeedData} className="w-full py-4 bg-slate-100 text-slate-500 rounded-2xl font-black hover:bg-slate-200 hover:text-slate-800 transition-all flex items-center justify-center gap-2">
-           <Database size={20} /> إضافة بيانات تجريبية (سيارة + سائق + رحلات)
-        </button>
      </div>
   </div>
 );
