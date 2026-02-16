@@ -1,0 +1,5 @@
+{
+  "name": "zed-louage",
+  "description": "A comprehensive local-first management system for collective taxi (Louage) services with multi-vehicle tracking, maintenance alerts, and financial reporting.",
+  "requestFramePermissions": []
+}
