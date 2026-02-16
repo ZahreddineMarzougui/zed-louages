@@ -29,7 +29,9 @@ import {
   CheckCircle2,
   Filter,
   Eye as EyeIcon,
-  EyeOff as EyeOffIcon
+  EyeOff as EyeOffIcon,
+  Cloud,
+  Loader2
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -42,6 +44,19 @@ import {
   AreaChart,
   Area 
 } from 'recharts';
+import { 
+  collection, 
+  onSnapshot, 
+  doc, 
+  setDoc, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  orderBy,
+  getDoc
+} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+import { db } from './firebase';
 import { Vehicle, Trip, Passenger, Settings, AppData, UserRole, DriverAccount } from './types';
 import { DEFAULT_SETTINGS, TRANSLATIONS } from './constants';
 
@@ -106,6 +121,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(() => userRole === 'driver' ? 'passengers' : 'dashboard');
   const [passengerFilterDate, setPassengerFilterDate] = useState(new Date().toISOString().split('T')[0]);
   const [editingPassenger, setEditingPassenger] = useState<Passenger | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Financial Filter States
   const [tripStartDate, setTripStartDate] = useState(() => {
@@ -122,26 +138,55 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [selectedRole, setSelectedRole] = useState<UserRole>(null);
 
-  const [data, setData] = useState<AppData>(() => {
-    const saved = localStorage.getItem('zedm_louage_data');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return {
-        ...parsed,
-        drivers: parsed.drivers || [],
-        passengers: parsed.passengers || [],
-        trips: (parsed.trips || []).map((t: any) => ({ ...t, visibleToDriver: t.visibleToDriver ?? true })),
-        settings: { ...DEFAULT_SETTINGS, ...parsed.settings }
-      };
-    }
-    return {
-      vehicles: [],
-      drivers: [],
-      trips: [],
-      passengers: [],
-      settings: DEFAULT_SETTINGS
-    };
+  const [data, setData] = useState<AppData>({
+    vehicles: [],
+    drivers: [],
+    trips: [],
+    passengers: [],
+    settings: DEFAULT_SETTINGS
   });
+
+  // --- Firebase Real-time Sync ---
+
+  useEffect(() => {
+    const unsubVehicles = onSnapshot(collection(db, "vehicles"), (snapshot) => {
+      const vehicles = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Vehicle));
+      setData(prev => ({ ...prev, vehicles }));
+    });
+
+    const unsubDrivers = onSnapshot(collection(db, "drivers"), (snapshot) => {
+      const drivers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as DriverAccount));
+      setData(prev => ({ ...prev, drivers }));
+    });
+
+    const unsubTrips = onSnapshot(query(collection(db, "trips"), orderBy("date", "desc")), (snapshot) => {
+      const trips = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Trip));
+      setData(prev => ({ ...prev, trips }));
+    });
+
+    const unsubPassengers = onSnapshot(collection(db, "passengers"), (snapshot) => {
+      const passengers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Passenger));
+      setData(prev => ({ ...prev, passengers }));
+    });
+
+    const unsubSettings = onSnapshot(doc(db, "settings", "global"), (snapshot) => {
+      if (snapshot.exists()) {
+        setData(prev => ({ ...prev, settings: snapshot.data() as Settings }));
+      } else {
+        // Init settings if don't exist
+        setDoc(doc(db, "settings", "global"), DEFAULT_SETTINGS);
+      }
+      setIsLoading(false);
+    });
+
+    return () => {
+      unsubVehicles();
+      unsubDrivers();
+      unsubTrips();
+      unsubPassengers();
+      unsubSettings();
+    };
+  }, []);
 
   const loggedInDriver = useMemo(() => 
     data.drivers.find(d => d.id === currentDriverId),
@@ -150,11 +195,6 @@ export default function App() {
   const assignedVehicle = useMemo(() => 
     loggedInDriver ? data.vehicles.find(v => v.id === loggedInDriver.vehicleId) : null,
   [data.vehicles, loggedInDriver]);
-
-  // Persistence
-  useEffect(() => {
-    localStorage.setItem('zedm_louage_data', JSON.stringify(data));
-  }, [data]);
 
   const t = TRANSLATIONS.ar;
   const isDarkMode = data.settings.theme === 'dark';
@@ -171,8 +211,7 @@ export default function App() {
   }, [data.trips, userRole, assignedVehicle, tripStartDate, tripEndDate]);
 
   const stats = useMemo(() => {
-    // Only use trips within range for dashboard too if preferred, but usually dashboard is last 7-30 days
-    const dashboardTrips = data.trips.slice(0, 30); // Use recent 30 for chart
+    const dashboardTrips = data.trips.slice(0, 30);
     const totalRevenue = dashboardTrips.reduce((acc, curr) => acc + curr.revenue, 0);
     const totalProfit = dashboardTrips.reduce((acc, curr) => acc + curr.netProfit, 0);
     const totalFuel = dashboardTrips.reduce((acc, curr) => acc + curr.fuelCost, 0);
@@ -187,7 +226,6 @@ export default function App() {
     return { totalRevenue, totalProfit, totalFuel, totalExpenses, chartData };
   }, [data.trips]);
 
-  // Passenger filtering logic
   const dailyPassengers = useMemo(() => {
     return data.passengers.filter(p => {
       const isDateMatch = p.date === passengerFilterDate;
@@ -196,7 +234,8 @@ export default function App() {
     });
   }, [data.passengers, passengerFilterDate, userRole, assignedVehicle]);
 
-  // Actions
+  // --- Firestore Actions ---
+
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRole) return;
@@ -234,58 +273,58 @@ export default function App() {
     setLoginUsername('');
   };
 
-  const updateSettings = (updates: Partial<Settings>) => {
-    setData(prev => ({ ...prev, settings: { ...prev.settings, ...updates } }));
+  const updateSettings = async (updates: Partial<Settings>) => {
+    const newSettings = { ...data.settings, ...updates };
+    await setDoc(doc(db, "settings", "global"), newSettings);
   };
 
-  const addVehicle = (v: Omit<Vehicle, 'id'>) => {
-    const newV = { ...v, id: crypto.randomUUID() };
-    setData(prev => ({ ...prev, vehicles: [...prev.vehicles, newV] }));
+  const addVehicle = async (v: Omit<Vehicle, 'id'>) => {
+    await addDoc(collection(db, "vehicles"), v);
   };
 
-  const addDriver = (d: Omit<DriverAccount, 'id'>) => {
-    const newD = { ...d, id: crypto.randomUUID() };
-    setData(prev => ({ ...prev, drivers: [...prev.drivers, newD] }));
+  const addDriver = async (d: Omit<DriverAccount, 'id'>) => {
+    await addDoc(collection(db, "drivers"), d);
   };
 
-  const removeDriver = (id: string) => {
-    setData(prev => ({ ...prev, drivers: prev.drivers.filter(d => d.id !== id) }));
+  const removeDriver = async (id: string) => {
+    await deleteDoc(doc(db, "drivers", id));
   };
 
-  const addTrip = (tripData: Omit<Trip, 'id' | 'driverShare' | 'netProfit' | 'visibleToDriver'>) => {
+  const addTrip = async (tripData: Omit<Trip, 'id' | 'driverShare' | 'netProfit' | 'visibleToDriver'>) => {
     const vehicle = data.vehicles.find(v => v.id === tripData.vehicleId);
     if (!vehicle) return;
     const driverShare = tripData.revenue * (data.settings.driverPercentage / 100);
     const netProfit = tripData.revenue - driverShare - tripData.fuelCost - tripData.expenses;
-    const newTrip = { ...tripData, id: crypto.randomUUID(), driverShare, netProfit, visibleToDriver: true };
-    const updatedVehicles = data.vehicles.map(v => 
-      v.id === tripData.vehicleId ? { ...v, currentKM: v.currentKM + tripData.kmTraveled } : v
-    );
-    setData(prev => ({ ...prev, trips: [newTrip, ...prev.trips], vehicles: updatedVehicles }));
+    const newTrip = { ...tripData, driverShare, netProfit, visibleToDriver: true };
+    
+    await addDoc(collection(db, "trips"), newTrip);
+    
+    const vehicleRef = doc(db, "vehicles", tripData.vehicleId);
+    await updateDoc(vehicleRef, {
+      currentKM: vehicle.currentKM + tripData.kmTraveled
+    });
   };
 
-  const toggleTripVisibility = (id: string) => {
-    setData(prev => ({
-      ...prev,
-      trips: prev.trips.map(t => t.id === id ? { ...t, visibleToDriver: !t.visibleToDriver } : t)
-    }));
+  const toggleTripVisibility = async (id: string) => {
+    const trip = data.trips.find(t => t.id === id);
+    if (trip) {
+      await updateDoc(doc(db, "trips", id), { visibleToDriver: !trip.visibleToDriver });
+    }
   };
 
-  const addPassenger = (p: Omit<Passenger, 'id'>) => {
-    setData(prev => ({ ...prev, passengers: [{ ...p, id: crypto.randomUUID() }, ...prev.passengers] }));
+  const addPassenger = async (p: Omit<Passenger, 'id'>) => {
+    await addDoc(collection(db, "passengers"), p);
   };
 
-  const updatePassenger = (p: Passenger) => {
-    setData(prev => ({
-      ...prev,
-      passengers: prev.passengers.map(item => item.id === p.id ? p : item)
-    }));
+  const updatePassenger = async (p: Passenger) => {
+    const { id, ...rest } = p;
+    await updateDoc(doc(db, "passengers", id), rest);
     setEditingPassenger(null);
   };
 
-  const removePassenger = (id: string) => {
+  const removePassenger = async (id: string) => {
     if (confirm('هل أنت متأكد من حذف هذا الحجز؟')) {
-      setData(prev => ({ ...prev, passengers: prev.passengers.filter(p => p.id !== id) }));
+      await deleteDoc(doc(db, "passengers", id));
     }
   };
 
@@ -293,6 +332,15 @@ export default function App() {
     setEditingPassenger(p);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#f8fafc] flex flex-col items-center justify-center p-4 font-['Cairo']">
+        <Loader2 className="animate-spin text-red-600 mb-4" size={48} />
+        <p className="text-slate-600 font-black">جاري مزامنة البيانات مع السحابة...</p>
+      </div>
+    );
+  }
 
   if (!userRole) {
     return (
@@ -404,7 +452,7 @@ export default function App() {
               </form>
             )}
           </div>
-          <p className="text-center text-[10px] text-slate-400 mt-10 font-black uppercase tracking-widest">zed-louage — Local Version</p>
+          <p className="text-center text-[10px] text-slate-400 mt-10 font-black uppercase tracking-widest">zed-louage — Cloud Version</p>
         </div>
       </div>
     );
@@ -479,9 +527,11 @@ export default function App() {
               {activeTab === 'settings' && t.settings}
               {activeTab === 'logTrip' && t.logTrip}
             </h2>
-            <div className="flex items-center gap-2 text-slate-500 mt-1 font-semibold">
-               <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
-               <p className="text-sm">النظام يعمل محلياً بكفاءة</p>
+            <div className="flex items-center gap-4 text-slate-500 mt-1 font-semibold">
+               <div className="flex items-center gap-2">
+                 <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
+                 <p className="text-sm flex items-center gap-1"><Cloud size={14}/> مزامنة فورية (Firebase)</p>
+               </div>
             </div>
           </div>
           
@@ -841,7 +891,6 @@ export default function App() {
            </div>
         )}
 
-        {/* ... Tab Vehicles ... */}
         {activeTab === 'vehicles' && userRole === 'owner' && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in slide-in-from-bottom-4 duration-500">
             {data.vehicles.map(v => {
@@ -876,7 +925,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ... Tab Maintenance ... */}
         {activeTab === 'maintenance' && userRole === 'owner' && (
            <div className="space-y-6">
               {data.vehicles.map(v => {
@@ -895,7 +943,8 @@ export default function App() {
                       <button 
                         onClick={() => {
                           const updated = data.vehicles.map(veh => veh.id === v.id ? { ...veh, lastOilChangeKM: veh.currentKM } : veh);
-                          setData(prev => ({ ...prev, vehicles: updated }));
+                          const vehRef = doc(db, "vehicles", v.id);
+                          updateDoc(vehRef, { lastOilChangeKM: v.currentKM });
                         }}
                         className="bg-slate-900 text-white px-8 py-3 rounded-2xl font-black text-sm"
                       >تأكيد الصيانة</button>
@@ -958,12 +1007,6 @@ export default function App() {
                 <input type="number" value={data.settings.oilChangeInterval} onChange={e => updateSettings({oilChangeInterval: parseInt(e.target.value)})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-black" />
               </div>
             </div>
-            <button 
-               onClick={() => { if(confirm('سيتم مسح جميع البيانات!')) { localStorage.clear(); window.location.reload(); }}}
-               className="w-full py-5 bg-red-50 text-red-600 rounded-[2rem] font-black hover:bg-red-600 hover:text-white transition-all text-sm"
-             >
-               مسح كامل قاعدة البيانات
-             </button>
           </div>
         )}
       </main>
